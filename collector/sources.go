@@ -192,7 +192,9 @@ func (e Exporter) getSourcesMetrics(logger *slog.Logger, ch chan<- prometheus.Me
 		sourceName := e.dnsLookup(logger, r.IPAddr)
 
 		if r.Mode == chrony.SourceModeRef && r.IPAddr.To4() != nil {
-			sourceName = chrony.RefidToString(binary.BigEndian.Uint32(r.IPAddr))
+			refid := chrony.RefidToString(binary.BigEndian.Uint32(r.IPAddr))
+			sourceAddress = refid
+			sourceName = refid
 		}
 
 		// Compute the reachability from the Reachability bits.
