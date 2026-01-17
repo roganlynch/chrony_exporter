@@ -180,7 +180,12 @@ func (e Exporter) getTrackingMetrics(logger *slog.Logger, ch chan<- prometheus.M
 		return fmt.Errorf("got wrong 'tracking' response: %q", packet)
 	}
 
-	ch <- trackingInfo.mustNewConstMetric(1.0, tracking.IPAddr.String(), e.trackingFormatName(logger, tracking.Tracking), chrony.RefidAsHEX(tracking.RefID))
+	trackingAddress := tracking.IPAddr.String()
+	if tracking.IPAddr.IsUnspecified() {
+		trackingAddress = chrony.RefidToString(tracking.RefID)
+	}
+
+	ch <- trackingInfo.mustNewConstMetric(1.0, trackingAddress, e.trackingFormatName(logger, tracking.Tracking), chrony.RefidAsHEX(tracking.RefID))
 
 	ch <- trackingLastOffset.mustNewConstMetric(tracking.LastOffset)
 	logger.Debug("Tracking Last Offset", "offset", tracking.LastOffset)
