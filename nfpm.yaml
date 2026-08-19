@@ -1,0 +1,26 @@
+name: chrony-exporter
+arch: amd64
+platform: linux
+# nfpm expands env vars in string fields; the `deb` Makefile target sets this
+# from the repo's VERSION file before invoking nfpm.
+version: ${PKG_VERSION}
+version_schema: none
+maintainer: Rogan Lynch <roganl@gmail.com>
+description: |
+  Prometheus exporter for chrony NTP statistics.
+homepage: https://github.com/SuperQ/chrony_exporter
+license: Apache-2.0
+
+contents:
+  - src: .build/linux-amd64/chrony_exporter
+    dst: /usr/bin/chrony_exporter
+  - src: LICENSE
+    dst: /usr/share/doc/chrony-exporter/LICENSE
+  - src: packaging/chrony_exporter@.service
+    dst: /lib/systemd/system/chrony_exporter@.service
+  - src: packaging/doc/chrony_exporter.env.example
+    dst: /usr/share/doc/chrony-exporter/chrony_exporter.env.example
+
+scripts:
+  postinstall: packaging/postinstall.sh
+  postremove: packaging/postremove.sh

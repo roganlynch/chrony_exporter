@@ -1,0 +1,131 @@
+---
+name: Debian package
+on:
+  pull_request:
+  push:
+    branches: [main, master, 'release-*']
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build .deb
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make deb
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrony-exporter-deb
+          path: chrony-exporter_*_amd64.deb
+          retention-days: 7
+
+  verify:
+    name: Verify package (systemd + chronyd)
+    runs-on: ubuntu-24.04
+    needs: [build]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: chrony-exporter-deb
+
+      # Runs the just-built .deb under real systemd + real chronyd in a
+      # nested, privileged container to prove the unit actually works, not
+      # just that nfpm produced a file.
+      - name: Build systemd test image
+        run: docker build --tag chrony-exporter-citest -f packaging/ci/Dockerfile.systemd-test packaging/ci/
+
+      - name: Boot systemd container
+        run: |
+          set -eu
+          # --cgroupns=host (not a manual /sys/fs/cgroup bind mount) and
+          # -e container=docker (systemd checks this to behave correctly
+          # under containerization) are both required for systemd to come
+          # up as PID 1 in a container.
+          docker run -d --name chrony-exporter-verify --privileged --cgroupns=host \
+            -e container=docker \
+            --tmpfs /run --tmpfs /run/lock \
+            chrony-exporter-citest
+
+      - name: Wait for chrony to be active
+        run: |
+          set -eu
+          for i in $(seq 1 60); do
+            state=$(docker exec chrony-exporter-verify systemctl is-active chrony 2>&1) && break
+            echo "waiting for chrony ($i/60): $state"
+            sleep 1
+          done
+          docker exec chrony-exporter-verify systemctl is-active chrony
+
+      - name: Install the .deb and run checks
+        run: |
+          set -eu
+          DEB=$(ls chrony-exporter_*_amd64.deb)
+          docker cp "$DEB" chrony-exporter-verify:/root/"$DEB"
+          # dpkg -i, not apt-get install <path>: the package has no runtime
+          # deps (static Go binary), so there's nothing for apt to resolve.
+          docker exec chrony-exporter-verify dpkg -i /root/"$DEB"
+
+          docker exec chrony-exporter-verify bash -eu -c '
+            check() { echo "-- check: $1"; }
+
+            # --collector.chmod-socket is required here: without it chronyd
+            # rejects the exporter checks even though it is running as root.
+            echo "ARGS=\"--chrony.address=unix:///run/chrony/chronyd.sock --web.listen-address=:9123 --collector.chmod-socket\"" > /etc/default/chrony_exporter@primary
+            systemctl daemon-reload
+            systemctl enable --now chrony_exporter@primary.service
+            sleep 1
+            systemctl status chrony_exporter@primary.service --no-pager || true
+
+            check "User=root"
+            ACTUAL_USER=$(systemctl show chrony_exporter@primary.service -p User --value)
+            echo "got: [$ACTUAL_USER]"
+            [ "$ACTUAL_USER" = "root" ]
+
+            check "chrony_up == 1"
+            curl -sf localhost:9123/metrics | grep -qx "chrony_up 1"
+
+            # No ExecReload on this unit (see the unit file comment): confirm
+            # `systemctl reload` is cleanly rejected rather than silently
+            # killing the exporter with no auto-recovery (SIGHUP is a
+            # systemd "clean" exit by default, so Restart=on-failure never
+            # fires after it).
+            check "reload is rejected (no ExecReload), not silently fatal"
+            PID_BEFORE=$(systemctl show chrony_exporter@primary.service -p MainPID --value)
+            systemctl reload chrony_exporter@primary.service 2>&1 && RELOAD_RC=0 || RELOAD_RC=$?
+            echo "reload exit code: $RELOAD_RC"
+            [ "$RELOAD_RC" != "0" ]
+            PID_AFTER=$(systemctl show chrony_exporter@primary.service -p MainPID --value)
+            [ "$PID_BEFORE" = "$PID_AFTER" ]
+
+            check "drop-in CPUAffinity applies"
+            mkdir -p /etc/systemd/system/chrony_exporter@primary.service.d
+            printf "[Service]\nCPUAffinity=0-2\n" > /etc/systemd/system/chrony_exporter@primary.service.d/test.conf
+            systemctl daemon-reload
+            systemctl restart chrony_exporter@primary.service
+            sleep 1
+            ACTUAL_AFFINITY=$(systemctl show chrony_exporter@primary.service -p CPUAffinity --value)
+            echo "got: [$ACTUAL_AFFINITY]"
+            [ "$ACTUAL_AFFINITY" = "0-2" ]
+
+            check "remove leaves admin-created files in place"
+            dpkg -r chrony-exporter
+            [ -f /etc/default/chrony_exporter@primary ]
+            [ -f /etc/systemd/system/chrony_exporter@primary.service.d/test.conf ]
+
+            echo "verify: all checks passed"
+          '
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f chrony-exporter-verify || true

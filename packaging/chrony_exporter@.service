@@ -1,0 +1,30 @@
+[Unit]
+Description=Prometheus exporter for chrony NTP statistics (%i)
+Documentation=https://github.com/SuperQ/chrony_exporter
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# root, not nobody: the README documents that the exporter needs to run as
+# root (or the same user as chrony) to use the unix command socket most
+# chrony installs listen on, and that running as root requires
+# --collector.chmod-socket. No hardening directives (NoNewPrivileges,
+# ProtectSystem, ProtectHome, Group=) for the same reason -- they'd conflict
+# with root + raw socket access.
+User=root
+EnvironmentFile=/etc/default/chrony_exporter@%i
+ExecStart=/usr/bin/chrony_exporter $ARGS
+# No ExecReload: chrony_exporter has no SIGHUP handler, and systemd treats
+# SIGHUP as a "clean" exit by default, so Restart=on-failure never fires
+# after `kill -HUP` kills it -- `systemctl reload` would silently and
+# permanently kill the exporter with no auto-recovery. `systemctl restart`
+# already does a full clean cycle in under a second; there's no working
+# reload to keep.
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20s
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target

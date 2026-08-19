@@ -30,6 +30,22 @@ You can build a Docker container with the included `docker` make target:
 
 This will not even require Go tooling on the host.
 
+### Building a Debian package
+
+You can build a `.deb` package with the included `deb` make target:
+
+    make deb
+
+This produces `chrony-exporter_<version>_amd64.deb`, built via
+[nfpm](https://nfpm.goreleaser.com/) from the config in `nfpm.yaml`. It
+installs the binary to `/usr/bin/chrony_exporter` along with a
+`chrony_exporter@.service` systemd template unit (see `packaging/`), so
+instances are managed as `chrony_exporter@<name>.service` with their flags in
+`/etc/default/chrony_exporter@<name>` (see
+`packaging/doc/chrony_exporter.env.example`). The unit runs the exporter as
+`root`, matching the `--collector.chmod-socket` requirement described below
+for reading chrony's unix command socket.
+
 ### Running in a container
 
 Because chrony only listens on the host localhost, you need to adjust the default chrony address

@@ -1,1 +1,3 @@
 /chrony_exporter
+/.build/
+*.deb
